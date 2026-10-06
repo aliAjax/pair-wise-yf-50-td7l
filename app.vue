@@ -1,3 +1,5 @@
 <template>
-  <NuxtPage />
+  <NMessageProvider>
+    <NuxtPage />
+  </NMessageProvider>
 </template>
