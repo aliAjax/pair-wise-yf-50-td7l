@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { NAlert, NButton, NCard, NInput, NProgress, NSelect, NStatistic, NSwitch, NTag } from "naive-ui";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { NAlert, NButton, NCard, NInput, NInputNumber, NProgress, NSelect, NStatistic, NSwitch, NTag } from "naive-ui";
 import { useOnline } from "@vueuse/core";
 import { toTypedSchema } from "@vee-validate/zod";
 import { useForm } from "vee-validate";
@@ -26,6 +26,25 @@ const [note] = defineField("note");
 const selected = computed(() => store.households.find((item) => item.id === selectedId.value) ?? store.households[0]);
 const taskAssignee = ref("救援一组");
 const taskTitle = ref("现场复核");
+const allocHouseholdId = ref(store.households[0]?.id ?? "");
+const allocShelterId = ref(store.shelters[0]?.id ?? "");
+const allocBeds = ref(1);
+const capacityDraft = reactive<Record<string, number>>(Object.fromEntries(store.shelters.map((item) => [item.id, item.capacity])));
+const householdOptions = computed(() => store.households.map((item) => ({ value: item.id, label: `${item.head} · ${item.members}人 · ${item.community}` })));
+const shelterOptions = computed(() => store.shelters.map((item) => ({ value: item.id, label: `${item.name}（核定 ${item.capacity} 床）` })));
+const headOf = (id: string) => store.households.find((item) => item.id === id)?.head ?? "记录已删除";
+watch(allocHouseholdId, (id) => {
+  const household = store.households.find((item) => item.id === id);
+  if (household) allocBeds.value = household.members;
+});
+function addAllocation() {
+  if (!allocHouseholdId.value || !allocShelterId.value || allocBeds.value < 1) return;
+  store.addAllocation({ shelterId: allocShelterId.value, householdId: allocHouseholdId.value, beds: allocBeds.value });
+}
+function syncOccupancy() {
+  if (!store.online) { store.syncNote = "当前离线：分配已按设备顺序排入待同步队列，联网后按提交先后合并。"; return; }
+  store.syncAllocations();
+}
 
 onMounted(async () => {
   cacheProbe.value = await probeCache();
@@ -49,7 +68,7 @@ function sync() {
 
 <template>
   <div class="shell">
-    <aside class="side"><div class="brand"><b>FIELD OPS</b><span>灾后评估</span></div><nav><button v-for="item in ['需求记录', '重复合并', '任务分派', '同步队列', '冲突处理']" :key="item" :class="{ active: panel === item }" @click="panel = item">{{ item }} <span v-if="item === '同步队列' && store.queue.length">({{ store.queue.length }})</span></button></nav><div class="network"><small>设备与网络</small><b>{{ browserOnline && store.online ? '在线' : '弱网 / 离线' }}</b><NSwitch v-model:value="store.online" /><small>最近同步 {{ new Date(store.lastSyncedAt).toLocaleTimeString('zh-CN') }}</small></div></aside>
+    <aside class="side"><div class="brand"><b>FIELD OPS</b><span>灾后评估</span></div><nav><button v-for="item in ['需求记录', '重复合并', '任务分派', '安置占用账', '同步队列', '冲突处理']" :key="item" :class="{ active: panel === item }" @click="panel = item">{{ item }} <span v-if="item === '同步队列' && store.queue.length">({{ store.queue.length }})</span></button></nav><div class="network"><small>设备与网络</small><b>{{ browserOnline && store.online ? '在线' : '弱网 / 离线' }}</b><NSwitch v-model:value="store.online" /><small>最近同步 {{ new Date(store.lastSyncedAt).toLocaleTimeString('zh-CN') }}</small></div></aside>
     <main>
       <header><div><small>评估批次 2026-09-29 · 河湾片区</small><h1>灾后需求评估与任务分派</h1><p>记录可离线保存，恢复连接后必须人工确认字段冲突。</p></div><div class="status-chip"><NProgress type="circle" :percentage="100 - store.queue.length * 8" :stroke-width="8" :width="42" /><span>{{ store.queue.length ? `${store.queue.length} 项待同步` : '数据已同步' }}</span></div></header>
       <section class="metrics"><NCard><NStatistic label="评估家庭" :value="store.metrics.households" /></NCard><NCard><NStatistic label="紧急需求" :value="store.metrics.urgent" /></NCard><NCard><NStatistic label="未完成任务" :value="store.metrics.openTasks" /></NCard><NCard><NStatistic label="本地队列" :value="store.metrics.queued" /></NCard></section>
@@ -60,6 +79,32 @@ function sync() {
       </div>
       <NCard v-if="panel === '重复合并'" title="疑似重复记录"><div v-for="group in store.duplicates" :key="group.map((item) => item.id).join('-')" class="duplicate"><b>{{ group[0].head }} · {{ group[0].community }}</b><p>{{ group.map((item) => `${item.address} / ${item.note}`).join('；') }}</p><NButton type="primary" size="small" @click="store.mergeDuplicate(group[1].id, group[0].id)">合并为一条并保留需求并集</NButton></div><p v-if="!store.duplicates.length" class="empty">没有检测到疑似重复记录。</p></NCard>
       <div v-if="panel === '任务分派'" class="page-grid"><NCard title="任务列表"><div v-for="task in store.tasks" :key="task.id" class="task-row"><div><b :class="{ complete: task.status === '已完成' }">{{ task.title }}</b><small>{{ store.households.find((item) => item.id === task.householdId)?.head }} · {{ task.due }}</small></div><NTag>{{ task.priority }}</NTag><span>{{ task.assignee }} · {{ task.status }}</span><NButton size="small" :disabled="task.status === '已完成'" @click="store.advanceTask(task.id)">推进状态</NButton></div></NCard><NCard title="分派新任务"><p>当前家庭：<b>{{ selected?.head }}</b></p><label class="field"><span>任务内容</span><NInput v-model:value="taskTitle" /></label><label class="field"><span>执行人/小组</span><NInput v-model:value="taskAssignee" /></label><NButton type="primary" block :disabled="!selected" @click="assignTask">加入任务并本地排队</NButton></NCard></div>
+      <div v-if="panel === '安置占用账'" class="page-grid">
+        <NCard title="安置点床位占用账" :bordered="false">
+          <div v-for="s in store.shelterLedger" :key="s.id" class="shelter-card">
+            <div class="shelter-head"><div><b>{{ s.name }}</b><small>{{ s.location }}</small></div><NTag :type="s.overflowTotal ? 'error' : s.usage >= 100 ? 'warning' : 'success'">已确认 {{ s.confirmed }}/{{ s.capacity }} 床</NTag></div>
+            <NProgress type="line" :percentage="s.usage" :status="s.overflowTotal ? 'error' : 'success'" />
+            <small class="shelter-stats">待同步 {{ s.queuedCount }} 户 · 超员待调整 {{ s.waitingCount }} 户<template v-if="s.overflowTotal">（共超出 {{ s.overflowTotal }} 人）</template></small>
+            <div class="capacity-edit"><NInputNumber v-model:value="capacityDraft[s.id]" :min="0" :max="500" size="small" style="width: 120px" /><NButton size="small" :disabled="capacityDraft[s.id] === s.capacity" @click="store.setShelterCapacity(s.id, capacityDraft[s.id] ?? s.capacity)">调整核定床位</NButton></div>
+            <div v-for="a in store.allocations.filter((x) => x.shelterId === s.id)" :key="a.id" class="alloc-row">
+              <div><b>{{ headOf(a.householdId) }}</b><small>{{ a.beds }} 床 · 设备序号 #{{ a.deviceSeq }} · {{ new Date(a.submittedAt).toLocaleTimeString('zh-CN') }}</small></div>
+              <NTag :type="a.status === '已确认' ? 'success' : a.status === '待同步' ? 'info' : 'error'">{{ a.status }}</NTag>
+              <small v-if="a.overflow" class="overflow">超出 {{ a.overflow }} 人</small>
+              <NButton v-if="a.status === '超员待调整'" size="tiny" @click="store.removeAllocation(a.id)">移出</NButton>
+            </div>
+            <p v-if="!store.allocations.some((x) => x.shelterId === s.id)" class="empty">暂无分配记录。</p>
+          </div>
+        </NCard>
+        <NCard title="新增安置分配" :bordered="false">
+          <div class="alloc-form">
+            <label class="field"><span>家庭</span><NSelect v-model:value="allocHouseholdId" :options="householdOptions" /></label>
+            <label class="field"><span>安置点</span><NSelect v-model:value="allocShelterId" :options="shelterOptions" /></label>
+            <label class="field"><span>占用床位</span><NInputNumber v-model:value="allocBeds" :min="1" :max="30" style="width: 100%" /></label>
+          </div>
+          <div class="actions" style="margin-top: 12px"><NButton type="primary" @click="addAllocation">离线登记并排队</NButton><NButton :loading="store.syncing" @click="syncOccupancy">联网合并</NButton></div>
+          <p class="sync-note">{{ store.syncNote || '离线分配带设备顺序号排队；联网后按提交先后合并，先排的先算数，超核定容量的转入超员待调整。' }}</p>
+        </NCard>
+      </div>
       <NCard v-if="panel === '同步队列'" title="待同步操作"><p>{{ syncMessage || '恢复连接后按顺序提交，冲突不会自动覆盖。' }}</p><div v-for="item in store.queue" :key="item.id" class="queue-row"><NTag>{{ item.action }}</NTag><span>{{ item.entity }} · {{ item.detail }}</span><small>{{ new Date(item.time).toLocaleTimeString('zh-CN') }}</small></div><p v-if="!store.queue.length" class="empty">待同步队列为空。</p><NButton type="primary" :loading="store.syncing" @click="sync">人工确认并同步</NButton><small v-if="cacheProbe"> 数据缓存时间：{{ new Date(cacheProbe.cachedAt).toLocaleTimeString('zh-CN') }}</small></NCard>
       <NCard v-if="panel === '冲突处理'" title="字段级冲突"><div v-for="item in store.conflicts" :key="item.id" class="conflict"><b>{{ store.households.find((household) => household.id === item.householdId)?.head }} · {{ item.field }}</b><div class="conflict-values"><div><small>本机记录</small><span>{{ item.localValue }}</span></div><div><small>远端记录</small><span>{{ item.remoteValue }}</span></div></div><div class="actions"><NButton size="small" :disabled="item.status !== '待处理'" @click="store.resolveConflict(item.id, '采用本地')">采用本机</NButton><NButton size="small" type="primary" :disabled="item.status !== '待处理'" @click="store.resolveConflict(item.id, '采用远端')">采用远端</NButton><NTag>{{ item.status }}</NTag></div></div><p v-if="!store.conflicts.length" class="empty">暂无字段冲突。可先点击“人工确认并同步”模拟多人合并。</p></NCard>
     </main>
